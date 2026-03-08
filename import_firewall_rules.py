@@ -160,9 +160,11 @@ class SCMClient:
         else:
             resp = self.session.post(
                 self._url("/sse/config/v1/security-rules"),
-                params={"folder": self.folder},
+                params={"folder": self.folder, "position": "post"},
                 json=payload
             )
+            if not resp.ok:
+                log.error("SCM API error %s: %s", resp.status_code, resp.text)
             resp.raise_for_status()
 
         log.info("Rule pushed successfully: %s", rule.rule_name)
