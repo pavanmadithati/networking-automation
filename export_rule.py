@@ -35,21 +35,41 @@ def fetch_rules(token: str, folder: str, position: str, limit: int) -> list:
     return resp.json().get("data", [])
 
 
+def extract_names(value) -> list:
+    """Handle both plain string arrays and object arrays with a 'name' key."""
+    if not value:
+        return []
+    if isinstance(value[0], dict):
+        return [item.get("name", "") for item in value if item.get("name")]
+    return [str(v) for v in value]
+
+
 def rule_to_csv_row(rule: dict) -> dict:
+    # application: prefer allow_web_application (objects) over application (strings)
+    app_raw = rule.get("allow_web_application") or rule.get("application", [])
+    application = extract_names(app_raw)
+
+    # service: plain strings
+    service = extract_names(rule.get("service", []))
+
+    # log_end: check both log_end bool and log_settings.log_sessions
+    log_settings = rule.get("log_settings", {})
+    log_end = rule.get("log_end") or log_settings.get("log_sessions", False)
+
     return {
         "rule_name":           rule.get("name", ""),
         "description":         rule.get("description", ""),
-        "source_zone":         ";".join(rule.get("from", [])),
-        "destination_zone":    ";".join(rule.get("to", [])),
-        "source_address":      ";".join(rule.get("source", [])),
-        "destination_address": ";".join(rule.get("destination", [])),
-        "application":         ";".join(rule.get("application", [])),
-        "service":             ";".join(rule.get("service", [])),
+        "source_zone":         ";".join(extract_names(rule.get("from", []))),
+        "destination_zone":    ";".join(extract_names(rule.get("to", []))),
+        "source_address":      ";".join(extract_names(rule.get("source", []))),
+        "destination_address": ";".join(extract_names(rule.get("destination", []))),
+        "application":         ";".join(application),
+        "service":             ";".join(service),
         "action":              rule.get("action", ""),
         "log_start":           "yes" if rule.get("log_start") else "no",
-        "log_end":             "yes" if rule.get("log_end") else "no",
+        "log_end":             "yes" if log_end else "no",
         "profile_group":       ";".join(rule.get("profile_setting", {}).get("group", [])),
-        "tags":                ";".join(rule.get("tag", [])),
+        "tags":                ";".join(extract_names(rule.get("tag", []))),
     }
 
 
