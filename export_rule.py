@@ -2,6 +2,7 @@
 """Fetch SCM security rules and export them to CSV."""
 
 import os
+import re
 import csv
 import json
 import argparse
@@ -44,13 +45,20 @@ def extract_names(value) -> list:
     return [str(v) for v in value]
 
 
+PORT_PATTERN = re.compile(r'^(tcp|udp)[/_]\d+$', re.IGNORECASE)
+
+
 def rule_to_csv_row(rule: dict) -> dict:
     # application: prefer allow_web_application (objects) over application (strings)
     app_raw = rule.get("allow_web_application") or rule.get("application", [])
-    application = extract_names(app_raw)
+    all_apps = extract_names(app_raw)
 
-    # service: plain strings
-    service = extract_names(rule.get("service", []))
+    # Separate port-based values (e.g. tcp_443, udp/53) from real application names
+    application = [a for a in all_apps if not PORT_PATTERN.match(a)]
+    port_services = [a for a in all_apps if PORT_PATTERN.match(a)]
+
+    # service: use explicit service field, fall back to any port-based values from application
+    service = extract_names(rule.get("service", [])) or port_services
 
     # log_end: check both log_end bool and log_settings.log_sessions
     log_settings = rule.get("log_settings", {})
