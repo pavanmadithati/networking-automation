@@ -183,8 +183,9 @@ class PanOSClient:
 
     def rule_exists(self, xpath: str) -> bool:
         try:
-            self._post({"type": "config", "action": "get", "xpath": xpath})
-            return True
+            root = self._post({"type": "config", "action": "get", "xpath": xpath})
+            result = root.find("result")
+            return result is not None and len(result) > 0
         except RuntimeError:
             return False
 
