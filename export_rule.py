@@ -59,8 +59,8 @@ def rule_to_csv_row(rule: dict) -> dict:
     return {
         "rule_name":           rule.get("name", ""),
         "description":         rule.get("description", ""),
-        "source_zone":         ";".join(extract_names(rule.get("from", []))),
-        "destination_zone":    ";".join(extract_names(rule.get("to", []))),
+        "source_zone":         ";".join(extract_names(rule.get("from", []))) or "any",
+        "destination_zone":    ";".join(extract_names(rule.get("to", []))) or "any",
         "source_address":      ";".join(extract_names(rule.get("source", []))),
         "destination_address": ";".join(extract_names(rule.get("destination", []))),
         "application":         ";".join(application),
