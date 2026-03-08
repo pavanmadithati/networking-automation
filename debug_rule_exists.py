@@ -8,7 +8,15 @@ from import_firewall_rules import PanOSClient
 
 load_dotenv()
 
-client = PanOSClient(os.getenv("PANOS_HOST"), os.getenv("PANOS_API_KEY"))
+host = os.getenv("PANOS_HOST")
+username = os.getenv("PANOS_USERNAME")
+password = os.getenv("PANOS_PASSWORD")
+
+print(f"Generating API key for {username}@{host}...")
+api_key = PanOSClient.get_api_key(host, username, password)
+print(f"API key: {api_key}\n")
+
+client = PanOSClient(host, api_key)
 
 rule_name = "allow-rdp-admin-testpavan-test"
 vsys = os.getenv("PANOS_VSYS", "vsys1")
