@@ -25,7 +25,7 @@ load_dotenv()
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger(__name__)
@@ -160,6 +160,8 @@ class SCMClient:
                 log.warning("Rule already exists, skipping (use --overwrite): %s", rule.rule_name)
                 return False
         else:
+            import json as _json
+            log.debug("Payload being sent:\n%s", _json.dumps(payload, indent=2))
             resp = self.session.post(
                 self._url("/sse/config/v1/security-rules"),
                 params={"folder": self.folder, "position": "post"},
@@ -167,6 +169,7 @@ class SCMClient:
             )
             if not resp.ok:
                 log.error("SCM API error %s: %s", resp.status_code, resp.text)
+                log.error("Payload sent:\n%s", _json.dumps(payload, indent=2))
             resp.raise_for_status()
 
         log.info("Rule pushed successfully: %s", rule.rule_name)
