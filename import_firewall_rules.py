@@ -126,6 +126,8 @@ class SCMClient:
             "to": [z.strip() for z in rule.destination_zone.split(";") if z.strip()],
             "source": [a.strip() for a in rule.source_address.split(";") if a.strip()],
             "destination": [a.strip() for a in rule.destination_address.split(";") if a.strip()],
+            "source_user": ["any"],
+            "category": ["any"],
             "application": [a.strip() for a in rule.application.split(";") if a.strip()],
             "service": [s.strip() for s in rule.service.split(";") if s.strip()],
             "action": rule.action,
