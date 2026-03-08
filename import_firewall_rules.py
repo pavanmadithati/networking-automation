@@ -142,7 +142,7 @@ class SCMClient:
             payload["tag"] = [t.strip() for t in rule.tags.split(";") if t.strip()]
         return payload
 
-    def push_rule(self, rule: FirewallRule, overwrite: bool = False) -> bool:
+    def push_rule(self, rule: FirewallRule, overwrite: bool = False, position: str = "pre") -> bool:
         existing = self.get_rule(rule.rule_name)
         payload = self._rule_to_payload(rule)
 
@@ -164,7 +164,7 @@ class SCMClient:
             log.debug("Payload being sent:\n%s", _json.dumps(payload, indent=2))
             resp = self.session.post(
                 self._url("/sse/config/v1/security-rules"),
-                params={"folder": self.folder, "position": "post"},
+                params={"folder": self.folder, "position": position},
                 json=payload
             )
             if not resp.ok:
@@ -265,6 +265,7 @@ def parse_args():
     parser.add_argument("--client-secret", default=os.getenv("SCM_CLIENT_SECRET"), help="SCM OAuth2 client secret")
     parser.add_argument("--tsg-id", default=os.getenv("SCM_TSG_ID"), help="SCM Tenant Service Group ID")
     parser.add_argument("--folder", default=os.getenv("SCM_FOLDER", "Shared"), help="SCM folder (default: Shared)")
+    parser.add_argument("--position", default=os.getenv("SCM_POSITION", "pre"), choices=["pre", "post"], help="Rule position: pre or post (default: pre)")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing rules")
     parser.add_argument("--commit", action="store_true", help="Push candidate config after importing rules")
     parser.add_argument("--dry-run", action="store_true", help="Parse CSV and print rules without connecting to SCM")
@@ -291,7 +292,7 @@ def main():
     pushed = 0
     for rule in rules:
         try:
-            if client.push_rule(rule, overwrite=args.overwrite):
+            if client.push_rule(rule, overwrite=args.overwrite, position=args.position):
                 pushed += 1
         except Exception as e:
             log.error("Failed to push rule %s: %s", rule.rule_name, e)
