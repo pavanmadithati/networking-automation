@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-PAN-OS Firewall Rule Importer
-Reads security policy rules from a CSV file and pushes them to a
-Palo Alto Networks firewall or Panorama via the XML API.
+Strata Cloud Manager (SCM) Firewall Rule Importer
+Reads security policy rules from a CSV file and pushes them to
+Palo Alto Strata Cloud Manager via the REST API.
 
 Requirements:
-    pip install pan-os-python requests urllib3
+    pip install requests urllib3 python-dotenv
 """
 
 import csv
@@ -13,17 +13,15 @@ import sys
 import argparse
 import logging
 import urllib3
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass
 from typing import Optional
 
 import requests
 from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
-# Suppress SSL warnings for self-signed certs (common in firewall environments)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logging.basicConfig(
@@ -54,7 +52,6 @@ class FirewallRule:
     tags: str = ""
 
     def validate(self):
-        """Raise ValueError if required fields are missing or invalid."""
         if not self.rule_name:
             raise ValueError("rule_name is required")
         if self.action not in ("allow", "deny", "drop", "reset-client", "reset-server", "reset-both"):
@@ -64,157 +61,121 @@ class FirewallRule:
 
 
 # ---------------------------------------------------------------------------
-# XML builder
+# SCM API client
 # ---------------------------------------------------------------------------
 
-def _member_elements(values: str) -> list[ET.Element]:
-    """Convert a semicolon-separated string into a list of <member> elements."""
-    elements = []
-    for val in values.split(";"):
-        val = val.strip()
-        if val:
-            m = ET.Element("member")
-            m.text = val
-            elements.append(m)
-    return elements
+SCM_AUTH_URL = "https://auth.apps.paloaltonetworks.com/am/oauth2/access_token"
+SCM_API_BASE = "https://api.sase.paloaltonetworks.com"
 
 
-def rule_to_xml(rule: FirewallRule) -> ET.Element:
-    """Build the PAN-OS XML element for a single security rule."""
-    entry = ET.Element("entry", name=rule.rule_name)
-
-    # Description
-    if rule.description:
-        desc = ET.SubElement(entry, "description")
-        desc.text = rule.description
-
-    # Source zone
-    from_el = ET.SubElement(entry, "from")
-    for m in _member_elements(rule.source_zone):
-        from_el.append(m)
-
-    # Destination zone
-    to_el = ET.SubElement(entry, "to")
-    for m in _member_elements(rule.destination_zone):
-        to_el.append(m)
-
-    # Source address
-    src = ET.SubElement(entry, "source")
-    for m in _member_elements(rule.source_address):
-        src.append(m)
-
-    # Destination address
-    dst = ET.SubElement(entry, "destination")
-    for m in _member_elements(rule.destination_address):
-        dst.append(m)
-
-    # Application
-    app = ET.SubElement(entry, "application")
-    for m in _member_elements(rule.application):
-        app.append(m)
-
-    # Service
-    svc = ET.SubElement(entry, "service")
-    for m in _member_elements(rule.service):
-        svc.append(m)
-
-    # Action
-    action_el = ET.SubElement(entry, "action")
-    action_el.text = rule.action
-
-    # Logging
-    log_setting = ET.SubElement(entry, "log-setting")
-    log_setting.text = "default"
-    ET.SubElement(entry, "log-start").text = rule.log_start
-    ET.SubElement(entry, "log-end").text = rule.log_end
-
-    # Security profile group (optional)
-    if rule.profile_group:
-        pg = ET.SubElement(entry, "profile-setting")
-        group = ET.SubElement(pg, "group")
-        m = ET.SubElement(group, "member")
-        m.text = rule.profile_group
-
-    # Tags (optional)
-    if rule.tags:
-        tag_el = ET.SubElement(entry, "tag")
-        for m in _member_elements(rule.tags):
-            tag_el.append(m)
-
-    return entry
-
-
-# ---------------------------------------------------------------------------
-# PAN-OS API client
-# ---------------------------------------------------------------------------
-
-class PanOSClient:
-    def __init__(self, host: str, api_key: str, verify_ssl: bool = False):
-        self.base_url = f"https://{host}/api"
-        self.api_key = api_key
-        self.verify_ssl = verify_ssl
+class SCMClient:
+    def __init__(self, client_id: str, client_secret: str, tsg_id: str, folder: str):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.tsg_id = tsg_id
+        self.folder = folder
         self.session = requests.Session()
-        self.session.verify = verify_ssl
+        self.access_token = self._get_access_token()
+        self.session.headers.update({
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        })
 
-    @classmethod
-    def get_api_key(cls, host: str, username: str, password: str, verify_ssl: bool = False) -> str:
-        """Retrieve an API key using credentials."""
-        url = f"https://{host}/api"
-        resp = requests.get(
-            url,
-            params={"type": "keygen", "user": username, "password": password},
-            verify=verify_ssl,
-            timeout=15,
+    def _get_access_token(self) -> str:
+        log.info("Authenticating with SCM...")
+        resp = requests.post(
+            SCM_AUTH_URL,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "scope": f"tsg_id:{self.tsg_id}"
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"}
         )
         resp.raise_for_status()
-        root = ET.fromstring(resp.text)
-        if root.attrib.get("status") != "success":
-            raise RuntimeError(f"Authentication failed: {resp.text}")
-        return root.findtext("result/key")
+        token = resp.json().get("access_token")
+        if not token:
+            raise RuntimeError("Failed to retrieve access token from SCM")
+        log.info("Authentication successful.")
+        return token
 
-    def _post(self, params: dict) -> ET.Element:
-        params["key"] = self.api_key
-        resp = self.session.post(self.base_url, data=params, timeout=30)
-        resp.raise_for_status()
-        root = ET.fromstring(resp.text)
-        if root.attrib.get("status") != "success":
-            raise RuntimeError(f"API error: {resp.text}")
-        return root
+    def _url(self, path: str) -> str:
+        return f"{SCM_API_BASE}{path}"
 
-    def rule_exists(self, xpath: str) -> bool:
-        try:
-            root = self._post({"type": "config", "action": "get", "xpath": xpath})
-            result = root.find("result")
-            return result is not None and len(result) > 0
-        except RuntimeError:
-            return False
-
-    def push_rule(self, rule: FirewallRule, vsys: str = "vsys1", overwrite: bool = False):
-        xpath = (
-            f"/config/devices/entry[@name='localhost.localdomain']"
-            f"/vsys/entry[@name='{vsys}']"
-            f"/rulebase/security/rules/entry[@name='{rule.rule_name}']"
+    def get_rule(self, rule_name: str) -> Optional[dict]:
+        resp = self.session.get(
+            self._url("/sse/config/v1/security-rules"),
+            params={"folder": self.folder, "name": rule_name}
         )
-        xml_element = rule_to_xml(rule)
-        xml_str = ET.tostring(xml_element, encoding="unicode")
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("data", [])
+        for item in items:
+            if item.get("name") == rule_name:
+                return item
+        return None
 
-        if self.rule_exists(xpath):
+    def _rule_to_payload(self, rule: FirewallRule) -> dict:
+        payload = {
+            "name": rule.rule_name,
+            "folder": self.folder,
+            "from": [z.strip() for z in rule.source_zone.split(";") if z.strip()],
+            "to": [z.strip() for z in rule.destination_zone.split(";") if z.strip()],
+            "source": [a.strip() for a in rule.source_address.split(";") if a.strip()],
+            "destination": [a.strip() for a in rule.destination_address.split(";") if a.strip()],
+            "application": [a.strip() for a in rule.application.split(";") if a.strip()],
+            "service": [s.strip() for s in rule.service.split(";") if s.strip()],
+            "action": rule.action,
+            "log_start": rule.log_start == "yes",
+            "log_end": rule.log_end == "yes",
+        }
+        if rule.description:
+            payload["description"] = rule.description
+        if rule.profile_group:
+            payload["profile_setting"] = {"group": [rule.profile_group]}
+        if rule.tags:
+            payload["tag"] = [t.strip() for t in rule.tags.split(";") if t.strip()]
+        return payload
+
+    def push_rule(self, rule: FirewallRule, overwrite: bool = False) -> bool:
+        existing = self.get_rule(rule.rule_name)
+        payload = self._rule_to_payload(rule)
+
+        if existing:
             if overwrite:
+                rule_id = existing["id"]
                 log.info("Overwriting existing rule: %s", rule.rule_name)
-                self._post({"type": "config", "action": "edit", "xpath": xpath, "element": xml_str})
+                resp = self.session.put(
+                    self._url(f"/sse/config/v1/security-rules/{rule_id}"),
+                    params={"folder": self.folder},
+                    json=payload
+                )
+                resp.raise_for_status()
             else:
                 log.warning("Rule already exists, skipping (use --overwrite): %s", rule.rule_name)
                 return False
         else:
-            self._post({"type": "config", "action": "set", "xpath": xpath, "element": xml_str})
+            resp = self.session.post(
+                self._url("/sse/config/v1/security-rules"),
+                params={"folder": self.folder},
+                json=payload
+            )
+            resp.raise_for_status()
 
         log.info("Rule pushed successfully: %s", rule.rule_name)
         return True
 
     def commit(self, description: str = "Imported via CSV importer"):
-        log.info("Committing configuration...")
-        self._post({"type": "commit", "cmd": f"<commit><description>{description}</description></commit>"})
-        log.info("Commit successful.")
+        log.info("Committing configuration to SCM...")
+        resp = self.session.post(
+            self._url("/sse/config/v1/config-versions/candidate:push"),
+            json={"folders": [self.folder], "description": description}
+        )
+        resp.raise_for_status()
+        log.info("Commit pushed successfully.")
 
 
 # ---------------------------------------------------------------------------
@@ -227,16 +188,15 @@ REQUIRED_COLUMNS = {
     "application", "service", "action",
 }
 
-def load_rules_from_csv(csv_path: str) -> list[FirewallRule]:
+
+def load_rules_from_csv(csv_path: str) -> list:
     rules = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-
         missing = REQUIRED_COLUMNS - set(reader.fieldnames or [])
         if missing:
             raise ValueError(f"CSV is missing required columns: {missing}")
-
-        for i, row in enumerate(reader, start=2):  # row 1 is header
+        for i, row in enumerate(reader, start=2):
             try:
                 rule = FirewallRule(
                     rule_name=row["rule_name"].strip(),
@@ -257,20 +217,30 @@ def load_rules_from_csv(csv_path: str) -> list[FirewallRule]:
                 rules.append(rule)
             except (ValueError, KeyError) as e:
                 log.error("Skipping row %d due to error: %s", i, e)
-
     return rules
 
 
 # ---------------------------------------------------------------------------
-# Dry-run: print generated XML without connecting to firewall
+# Dry-run
 # ---------------------------------------------------------------------------
 
-def dry_run(rules: list[FirewallRule]):
-    print("\n=== DRY RUN — Generated XML ===\n")
+def dry_run(rules: list):
+    print("\n=== DRY RUN — Rules to be pushed ===\n")
     for rule in rules:
-        xml_el = rule_to_xml(rule)
-        ET.indent(xml_el, space="  ")
-        print(ET.tostring(xml_el, encoding="unicode"))
+        print(f"Rule: {rule.rule_name}")
+        print(f"  Action      : {rule.action}")
+        print(f"  Source Zone : {rule.source_zone}")
+        print(f"  Dest Zone   : {rule.destination_zone}")
+        print(f"  Source Addr : {rule.source_address}")
+        print(f"  Dest Addr   : {rule.destination_address}")
+        print(f"  Application : {rule.application}")
+        print(f"  Service     : {rule.service}")
+        if rule.description:
+            print(f"  Description : {rule.description}")
+        if rule.profile_group:
+            print(f"  Profile Grp : {rule.profile_group}")
+        if rule.tags:
+            print(f"  Tags        : {rule.tags}")
         print()
     print(f"Total rules: {len(rules)}")
 
@@ -281,20 +251,16 @@ def dry_run(rules: list[FirewallRule]):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Import PAN-OS security rules from a CSV file"
+        description="Import security rules from a CSV file into Strata Cloud Manager"
     )
     parser.add_argument("csv_file", help="Path to the CSV file containing firewall rules")
-    parser.add_argument("--host", default=os.getenv("PANOS_HOST"), help="Firewall/Panorama hostname or IP")
-    parser.add_argument("--username", default=os.getenv("PANOS_USERNAME"), help="Admin username")
-    parser.add_argument("--password", default=os.getenv("PANOS_PASSWORD"), help="Admin password")
-    parser.add_argument("--api-key", default=os.getenv("PANOS_API_KEY") or None, help="API key (alternative to username/password)")
-    parser.add_argument("--vsys", default=os.getenv("PANOS_VSYS", "vsys1"), help="Target vsys (default: vsys1)")
+    parser.add_argument("--client-id", default=os.getenv("SCM_CLIENT_ID"), help="SCM OAuth2 client ID")
+    parser.add_argument("--client-secret", default=os.getenv("SCM_CLIENT_SECRET"), help="SCM OAuth2 client secret")
+    parser.add_argument("--tsg-id", default=os.getenv("SCM_TSG_ID"), help="SCM Tenant Service Group ID")
+    parser.add_argument("--folder", default=os.getenv("SCM_FOLDER", "Shared"), help="SCM folder (default: Shared)")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing rules")
-    parser.add_argument("--commit", action="store_true", help="Commit after pushing rules")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Parse CSV and print XML without connecting to firewall")
-    parser.add_argument("--verify-ssl", action="store_true",
-                        help="Verify SSL certificate (default: off for self-signed certs)")
+    parser.add_argument("--commit", action="store_true", help="Push candidate config after importing rules")
+    parser.add_argument("--dry-run", action="store_true", help="Parse CSV and print rules without connecting to SCM")
     return parser.parse_args()
 
 
@@ -309,28 +275,19 @@ def main():
         dry_run(rules)
         return
 
-    if not args.host:
-        log.error("--host is required unless using --dry-run")
+    if not all([args.client_id, args.client_secret, args.tsg_id]):
+        log.error("SCM_CLIENT_ID, SCM_CLIENT_SECRET, and SCM_TSG_ID are required")
         sys.exit(1)
 
-    # Resolve API key
-    if args.api_key:
-        api_key = args.api_key
-    elif args.username and args.password:
-        log.info("Retrieving API key for %s@%s", args.username, args.host)
-        api_key = PanOSClient.get_api_key(
-            args.host, args.username, args.password, verify_ssl=args.verify_ssl
-        )
-    else:
-        log.error("Provide --api-key or both --username and --password")
-        sys.exit(1)
-
-    client = PanOSClient(args.host, api_key, verify_ssl=args.verify_ssl)
+    client = SCMClient(args.client_id, args.client_secret, args.tsg_id, args.folder)
 
     pushed = 0
     for rule in rules:
-        if client.push_rule(rule, vsys=args.vsys, overwrite=args.overwrite):
-            pushed += 1
+        try:
+            if client.push_rule(rule, overwrite=args.overwrite):
+                pushed += 1
+        except Exception as e:
+            log.error("Failed to push rule %s: %s", rule.rule_name, e)
 
     log.info("Pushed %d/%d rules", pushed, len(rules))
 
