@@ -1,0 +1,11 @@
+rule_name,description,source_zone,destination_zone,source_address,destination_address,application,service,action,log_start,log_end,profile_group,tags
+allow-web-outbound,Allow internal users to browse web,Trust,Untrust,10.0.0.0/8,any,web-browsing ssl,application-default,allow,no,yes,outbound-security,web;outbound
+allow-dns-internal,Allow DNS queries to internal DNS servers,Trust,DMZ,192.168.1.0/24,192.168.100.53/32,dns,application-default,allow,no,yes,,dns;internal
+allow-ssh-admin,Allow SSH from admin subnet to servers,Management,Trust,10.10.10.0/24,10.0.1.0/24,ssh,application-default,allow,yes,yes,admin-access,ssh;admin
+allow-smtp-outbound,Allow mail server to send outbound email,DMZ,Untrust,192.168.100.25/32,any,smtp,application-default,allow,no,yes,outbound-security,smtp;mail
+block-smb-outbound,Block SMB traffic from leaving network,Trust,Untrust,any,any,smb,any,deny,yes,yes,,block;smb
+allow-https-to-api,Allow app servers to reach external APIs,DMZ,Untrust,192.168.100.0/24,any,ssl,tcp/443,allow,no,yes,outbound-security,api;https
+allow-rdp-admin,Allow RDP from jump server only,Management,Trust,10.10.10.5/32,10.0.0.0/8,msrdp,application-default,allow,yes,yes,admin-access,rdp;admin
+block-telnet-all,Block all telnet traffic,any,any,any,any,telnet,any,deny,yes,yes,,block;telnet
+allow-icmp-monitor,Allow ICMP for network monitoring,Management,Trust,10.10.10.0/24,any,ping,application-default,allow,no,no,,icmp;monitoring
+deny-unknown-outbound,Deny unknown applications leaving network,Trust,Untrust,any,any,unknown-tcp unknown-udp,any,deny,yes,yes,,block;unknown
